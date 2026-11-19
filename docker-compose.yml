@@ -1,0 +1,135 @@
+# Infraestructura compartida de la facturacion nueva V2.
+#
+# Por ahora solo las bases de datos:
+#   - MongoDB: el proceso de los comprobantes.
+#   - Postgres: configuracion y certificados del firmador.
+#
+# Cada servicio vive en su propio repositorio y se une a la red
+# "pac-invoicing-v2" que se crea aqui. Los puertos quedan en 127.0.0.1: nada se
+# expone fuera del equipo.
+
+name: pac-invoicing-v2
+
+networks:
+  pac-invoicing-v2:
+    name: pac-invoicing-v2
+
+volumes:
+  mongo_datos:
+  mongo_llave:
+  postgres_datos:
+  garage_datos:
+  filestash_datos:
+
+services:
+  # ---------------------------------------------------------------- MongoDB
+  # Replica set de un nodo: sin replica set no hay transacciones.
+
+  mongo-llave:
+    image: mongo:8.0.32
+    # Un replica set con usuarios exige un keyFile. Se genera una vez y queda
+    # en su volumen.
+    entrypoint:
+      - bash
+      - -c
+      - |
+        if [ ! -f /llave/mongo.key ]; then
+          openssl rand -base64 756 > /llave/mongo.key
+        fi
+        chmod 400 /llave/mongo.key
+        chown 999:999 /llave/mongo.key
+    volumes:
+      - mongo_llave:/llave
+
+  mongo:
+    image: mongo:8.0.32
+    restart: unless-stopped
+    depends_on:
+      mongo-llave:
+        condition: service_completed_successfully
+    command: ["--replSet", "rs0", "--bind_ip_all", "--keyFile", "/llave/mongo.key"]
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+      MONGO_CORE_PASSWORD: ${MONGO_CORE_PASSWORD}
+      MONGO_RIDE_PASSWORD: ${MONGO_RIDE_PASSWORD}
+    ports:
+      - "127.0.0.1:27017:27017"
+    volumes:
+      - mongo_datos:/data/db
+      - mongo_llave:/llave:ro
+      - ./mongo/crear-usuarios.js:/docker-entrypoint-initdb.d/crear-usuarios.js:ro
+    networks: [pac-invoicing-v2]
+    # El chequeo inicia el replica set la primera vez; despues solo confirma
+    # que hay un primario.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >
+          mongosh --quiet -u "$$MONGO_INITDB_ROOT_USERNAME" -p "$$MONGO_INITDB_ROOT_PASSWORD"
+          --authenticationDatabase admin --eval
+          "try { rs.status().ok } catch (e) { rs.initiate({_id:'rs0',members:[{_id:0,host:'mongo:27017'}]}).ok }"
+          && mongosh --quiet -u "$$MONGO_INITDB_ROOT_USERNAME" -p "$$MONGO_INITDB_ROOT_PASSWORD"
+          --authenticationDatabase admin --eval "quit(db.hello().isWritablePrimary ? 0 : 1)"
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 10s
+
+  # ---------------------------------------------------------------- Postgres
+  # Dos bases con dueno distinto: "configuracion" y "firmador" (certificados
+  # cifrados). Ningun usuario puede entrar a la base del otro.
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      PG_CONFIG_PASSWORD: ${PG_CONFIG_PASSWORD}
+      PG_SIGNER_PASSWORD: ${PG_SIGNER_PASSWORD}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - postgres_datos:/var/lib/postgresql/data
+      - ./postgres/crear-bases.sh:/docker-entrypoint-initdb.d/crear-bases.sh:ro
+    networks: [pac-invoicing-v2]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # ------------------------------------------------------------------ Garage
+  # Almacen de objetos propio (habla el mismo protocolo que S3, de codigo
+  # abierto de verdad). Aqui se archivan los XML firmados viejos, para no
+  # dejarlos creciendo en Mongo para siempre.
+
+  garage:
+    image: dxflrs/garage:v1.0.1
+    restart: unless-stopped
+    volumes:
+      - ./garage/garage.toml:/etc/garage.toml:ro
+      - garage_datos:/data
+    ports:
+      - "127.0.0.1:3900:3900"
+      - "127.0.0.1:3903:3903"
+    networks: [pac-invoicing-v2]
+    healthcheck:
+      test: ["CMD-SHELL", "/garage status || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # ---------------------------------------------------------------- Filestash
+  # Explorador de archivos por navegador para ver lo que hay dentro de Garage
+  # (solo para administrar/revisar a simple vista, ningun servicio depende de
+  # esto para funcionar).
+
+  filestash:
+    image: machines/filestash
+    restart: unless-stopped
+    volumes:
+      - filestash_datos:/app/data/state/
+    ports:
+      - "127.0.0.1:8334:8334"
+    networks: [pac-invoicing-v2]

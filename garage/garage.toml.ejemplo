@@ -1,0 +1,29 @@
+# Plantilla de configuracion de Garage.
+#
+# El archivo real, garage/garage.toml, NO se versiona: lleva dos secretos.
+# Lo genera scripts/generar-secretos.sh, que reemplaza los dos marcadores
+# REEMPLAZAR_* de abajo por valores aleatorios.
+#
+# Si lo escribes a mano:
+#   rpc_secret  = openssl rand -hex 32     (exactamente 64 caracteres hex)
+#   admin_token = openssl rand -base64 32
+
+metadata_dir = "/data/meta"
+data_dir = "/data/data"
+db_engine = "sqlite"
+
+# Un solo nodo: no hay replicas que repartir.
+replication_factor = 1
+
+rpc_bind_addr = "[::]:3901"
+rpc_public_addr = "127.0.0.1:3901"
+rpc_secret = "REEMPLAZAR_RPC_SECRET"
+
+[s3_api]
+s3_region = "garage"
+api_bind_addr = "[::]:3900"
+root_domain = ".s3.garage.localhost"
+
+[admin]
+api_bind_addr = "[::]:3903"
+admin_token = "REEMPLAZAR_ADMIN_TOKEN"

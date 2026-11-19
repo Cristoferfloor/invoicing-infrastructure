@@ -1,0 +1,8 @@
+.env
+.env.respaldo.*
+conexiones.local.txt
+
+# Lleva el rpc_secret y el admin_token de Garage. Se genera con
+# scripts/generar-secretos.sh a partir de garage/garage.toml.ejemplo.
+garage/garage.toml
+garage/garage.toml.respaldo.*
